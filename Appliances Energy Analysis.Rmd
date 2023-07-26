@@ -1,0 +1,781 @@
+---
+title: "Appliances Energy Analysis"
+author: "Muhamad Ilyas Haikal"
+output: 
+ html_document:
+   toc: true
+   toc_float: true
+   highlight: tango
+   df_print: paged
+   theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+The purpose of this research is to forecast the electricity consumption of a particular household in Belgium based on the temperature and humidity levels of various rooms in the facility and surrounding weather information over 4.5 months. The data set runs 4.5 months at 10 minutes. A ZigBee wireless sensor network is being used to monitor the home’s temperature and humidity levels. Around 3.3 minutes, each wireless node sent the temperature and humidity data. The wireless data was then averaged across intervals of 10 minutes. Every 10 minutes, m-bus energy meters collected the energy data. The experimental data sets were combined with the weather data from the closest airport weather station (Chievres Airport, Belgium), which was extracted from a public data set from Reliable Prognosis (rp5.ru). The data set has two random variables to test the regression models and exclude non-predictive characteristics (parameters).
+
+# Business Problem
+The increasing trend in energy consumption is becoming cause of concern for the entire world, as the energy consumption is increasing year after year so is the carbon and greenhouse gas emission, the majority portion of the electricity generated is consumed by industrial sector but a considerable amount is also consumed by residential sector.
+
+It is important to study the energy consuming behaviour in the residential sector and predict the energy consumption by home appliances as it consume maximum amount of energy in the residence. This project focuses on predicting the energy consumption of home appliances based on humidity and temperature.
+
+This project aims to predict the energy consumption of home appliances. With the advent of smart homes and the rising need for energy management, existing smart home systems can benefit from accurate prediction. If the energy usage can be predicted for every possible state of appliances, then device control can be optimized for energy savings as well. This is a case of Regression analysis which is part of the Supervised Learning problem. Appliance energy usage is the target variable while sensor data and weather data are the features.
+
+# Data Processing
+## Load Libraries
+
+```{r}
+library(dplyr)
+library(caret)
+library(tidyr)
+library(randomForest)
+library(ggplot2)
+library(lime)
+library(GGally)
+library(performance) 
+library(MLmetrics)
+library(lmtest)
+library(car)
+library(lubridate)
+library(psych)
+library(plotly)
+```
+
+```{r}
+# read data
+training <-  read.csv("training.csv")
+testing <-  read.csv("testing.csv")
+```
+
+```{r}
+data <- bind_rows(training, testing)
+data
+```
+The observation data consists of the following variables:
+
+- datetime year-month-day hour : minute:second
+- Appliances: energy use in Wh [TARGETED]
+- lights: energy use of light fixtures in the house in Wh
+- T1: Temperature in kitchen area, in Celsius
+- RH_1: Humidity in kitchen area, in %
+- T2: Temperature in living room area, in Celsius
+- RH_2:Humidity in living room area, in %
+- T3:Temperature in laundry room area
+- RH_3:Humidity in laundry room area, in %
+- T4:Temperature in office room, in Celsius
+- RH_4:Humidity in office room, in %
+- T5:Temperature in bathroom, in Celsius
+- RH_5:Humidity in bathroom, in %
+- T6:Temperature outside the building (north side), in Celsius
+- RH_6:Humidity outside the building (north side), in %
+- T7:Temperature in ironing room , in Celsius
+- RH_7:Humidity in ironing room, in %
+- T8:Temperature in teenager room 2, in Celsius
+- RH_8:Humidity in teenager room 2, in %
+- T9:Temperature in parents room, in Celsius
+- RH_9:Humidity in parents room, in %
+- T_out:Temperature outside (from Chièvres weather station), in Celsius
+- Press_mm_hg: (from Chièvres weather station), in mm Hg
+- RH_out: Humidity outside (from Chièvres weather station), in %
+- Windspeed: (from Chièvres weather station), in m/s
+- Visibility: (from Chièvres weather station), in km
+- Tdewpoint: (from Chièvres weather station), °C
+- rv1: Random variable 1, nondimensional
+- rv2: Rnadom variable 2, nondimensional
+- Day_of_week: Name of Day, ordered
+- WeekStatus: Day status of Day_of_week
+
+Number of instances: 19,735 Number of attributes: 32
+
+To ensure that the data is fully prepared, we demonstrate how to use various data transformations, scaling, handling outliers, or any other statistical strategy. It is best practice to preprocess our data before performing analysis. Data must first be cleaned and transformed before it can be used for analysis and modeling.
+
+**Pre-processing**
+```{r}
+# data structure
+glimpse(data)
+```
+```{r}
+data <- data %>% rename('temp_kitchen' = 'T1', 
+                        'temp_living' = 'T2', 
+                        'temp_laundry' = 'T3',
+                        'temp_office' = 'T4',
+                        'temp_bath' = 'T5', 
+                        'temp_outside' = 'T6',
+                        'temp_iron' ='T7', 
+                        'temp_teen' = 'T8', 
+                        'temp_parents' = 'T9', 
+                        'temp_station' = 'T_out',
+                        'humid_kitchen' = 'RH_1', 
+                        'humid_living' = 'RH_2', 
+                        'humid_laundry' = 'RH_3', 
+                        'humid_office'= 'RH_4', 
+                        'humid_bath' = 'RH_5', 
+                        'humid_outside' = 'RH_6',
+                        'humid_iron' = 'RH_7', 
+                        'humid_teen' = 'RH_8', 
+                        'humid_parents' = 'RH_9', 
+                        'humid_station' = 'RH_out',
+                        'random_1' = 'rv1',
+                        'random_2' = 'rv2')
+```
+```{r}
+#  check missing value
+colSums(is.na(data))
+```
+```{r}
+# remove duplicate 
+unique(data)
+# remove row containing NA value 
+data <- data %>% filter(complete.cases(.))
+```
+```{r}
+data <- data %>% mutate(date = ymd_hms(date))
+# summarise the data to 24h format
+data <- data %>%
+  mutate(date = floor_date(date, "hour")) %>%
+  group_by(date) %>%
+  select_if(is.numeric) %>%
+  summarise_all("mean") %>%
+  ungroup() %>%
+  mutate(Day_of_week = wday(date, label = T),
+        WeekStatus = ifelse(Day_of_week %in% c("Sat", "Sun"), "weekend", "weekday") , 
+        WeekStatus = as.factor(WeekStatus),
+        Day_of_week = as.factor(Day_of_week))
+```
+
+**Check data distribution of each predictor**
+```{r}
+data %>% 
+   select_if(is.numeric) %>% 
+   select(-c(Press_mm_hg, Appliances, NSM)) %>% 
+   boxplot(main = 'Distribution of Each Predictor', xlab = 'Predictor', ylab = 'Values')
+```
+Our data can be visually examined to identify any outliers. Outliers affect the dependent variable we are developing by requiring our model to accommodate them. As their names indicate, outliers lie outside the majority of our model. Our model's resolving power may be reduced if we include outliers. We can observe from the boxplot that some variables, such as humid_laundry, humid_station, and Press_mm_hg, have noticeable outliers.
+
+**Define Outlier**
+```{r warning = FALSE, message = FALSE}
+boxplot.stats(data$humid_laundry)$out
+boxplot.stats(data$temp_office)$out
+boxplot.stats(data$temp_kitchen)$out
+boxplot.stats(data$humid_living)$out
+out_hkit <- boxplot.stats(data$humid_kitchen)$out
+out_tempout <- boxplot.stats(data$temp_outside)$out
+out_humidstat <- boxplot.stats(data$humid_station)$out
+out_tempbath <- boxplot.stats(data$temp_bath)$out
+out_tempiron <- boxplot.stats(data$temp_iron)$out
+out_hiron <- boxplot.stats(data$humid_iron)$out
+out_tempstat <- boxplot.stats(data$temp_station)$out
+out_tteen <- boxplot.stats(data$temp_teen)$out
+out_hteen <- boxplot.stats(data$humid_teen)$out
+boxplot.stats(data$humid_parents)$out
+out_wind <- boxplot.stats(data$Windspeed)$out
+out_dew <- boxplot.stats(data$Tdewpoint)$out
+out_temppar <- boxplot.stats(data$temp_parents)$out
+out_templiv <- boxplot.stats(data$temp_living)$out
+out_press <- boxplot.stats(data$Press_mm_hg)$out
+
+
+data_outlier <- data %>% filter(humid_laundry >= 49.47222 | temp_office >= 25.94310 | temp_office <= 15.69000 | temp_kitchen >= 25.47556 | temp_kitchen <= 16.79000 | humid_parents >= 53.14000 | humid_parents <= 29.48750 | humid_living >= 51.33444 | humid_living <= 26.18556 | humid_kitchen >= out_hkit |temp_bath >= out_tempbath | humid_iron >= out_hiron | temp_teen <= out_tteen | humid_teen >= out_hteen | temp_parents >= out_temppar | temp_outside >= out_tempout | humid_station <= out_humidstat | temp_station >= out_tempstat | temp_living >= out_templiv | Windspeed >= out_wind | Tdewpoint >= out_dew)
+
+
+```
+**Outlier on Original Data Distribution**
+```{r}
+# check if the outliers has an influence to targeted variable
+data %>% 
+    mutate(date = as.numeric(date)) %>%
+    ggplot(aes(x = date, y = Appliances)) +
+    geom_point() + 
+    geom_point(data = data_outlier, aes(x = date, y = Appliances), col = 'blue') + 
+    labs(
+        title = 'Distribution of Appliance : Original vs outlier (red)',
+        x = NULL,
+        y = 'Appliance') +
+    theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+```
+
+**Check the outlier data**
+```{r}
+data_no_outlier <- data %>% filter(!date %in% data_outlier$date)
+t.test(data$Appliances, data_outlier$Appliances)
+```
+The p-value for the T-test is less than 0.05. This indicates that it is safe to assume that the strengths of the standard and outlier groups differ. Even though they might require a different inspection, let’s eliminate the outliers for this project. We have created data_no_outlier for our anlysis.
+
+**Distribution on Each Predictor**
+```{r}
+data_no_outlier %>% 
+    select_if(is.numeric) %>% 
+    pivot_longer(cols = -Appliances, names_to = 'predictor') %>% 
+    ggplot(aes(x = value)) +
+    geom_density() +
+    facet_wrap(~predictor, scales = 'free_x')  +
+    labs(
+        title = 'Density graph of each variable',
+        x = 'variable',
+        y = 'Frequency'
+    )
+```
+The graph shows that humid_outside, random_1, random_2 are all fairly uniform in shape. This can imply that these variables are combined freely and without followed by other variables.
+
+## Data Transformation
+Let’s see the trend of our data for each predictor
+```{r warning = FALSE, message = FALSE}
+data_no_outlier %>% 
+    select_if(is.numeric) %>% 
+    pivot_longer(cols = -Appliances, names_to = 'predictor') %>% 
+    ggplot(aes(x = value, y = Appliances)) +
+    geom_point() +
+    geom_smooth(method = 'loess', formula = 'y ~ x') +
+    facet_wrap(~predictor, scales = 'free_x')  +
+    labs(
+        title = 'Trends in each variable',
+        x = 'Variable',
+        y = 'Values'
+    )
+```
+According to the plots, we’re hardly to suspect the correlation between each predictors to Appliances. lights are has the most noticable correlation line and a minor positive correlation exists between "humid_bath", "humid_kitchen", "temp_laundry", and "temp_outside". There's also a minor negative correlation betweenNSM,humid_teen, andhumid_parent`. With linear data, regression models perform the best. We can attempt to modify the distribution to become more linear by transforming the non-linear data.
+
+**Appliances as Log(Appliances)**
+```{r}
+ggplot(data = data_no_outlier, aes(x = (Appliances))) +
+  geom_density(fill = "green", color = "black", bins = 30) +
+  labs( title = "Appliances  Distribution", x = "Appliances")
+```
+**Transform Appliance**
+```{r}
+ggplot(data = data_no_outlier, aes(x = log(Appliances))) +
+  geom_density(fill = "green", color = "black", bins = 30) +
+  labs( title = "Log(Appliances)  Distribution", x = "Log(Appliances)")
+```
+We see that the two relation is more linear. We’ll persist this change to our dataset.
+
+```{r}
+data_log <-  data_no_outlier %>% mutate(Appliances = log(Appliances))
+```
+```{r}
+recap <- data_log %>% 
+  mutate(date = floor_date(date, "hour")) %>%
+  mutate(hour = hour(data_log$date),
+        month = month(data_log$date, label = T),
+        day = day(data_log$date))  %>% group_by(date, month, hour, day) %>% 
+  summarise(Appliances = mean(Appliances)) %>% 
+  ggplot(aes(x = hour , y = day, fill = Appliances)) + 
+  geom_tile() +
+  facet_grid(~month) +
+  scale_y_continuous(breaks = seq(1,31)) +
+  scale_x_continuous(breaks = seq(0,24,6)) +
+      labs(title = "Appliance Recap",
+             x = "hour",
+             y = "date") +
+        theme(axis.text.x = element_text(hjust = 1, angle = 45),
+              plot.title = element_text(face = "bold"),
+              panel.background = element_rect(fill = "#ffffff"),
+              axis.line.y = element_line(colour = "grey"),
+              axis.line.x = element_line(colour = "grey"))
+
+ggplotly(recap) %>% plotly::layout(legend=list(x=0, 
+                                 xanchor='left',
+                                 yanchor='bottom',
+                                 orientation='h'))
+```
+If we take a look at the plot there’s a pattern that lies on the data, and it was an outlier that we removed before.
+
+## Data Scaling
+```{r}
+describe(data_log, fast = T)
+```
+**Before Scaling**
+```{r}
+data_log %>%
+    select_if(is.numeric) %>% 
+    pivot_longer(cols = -Appliances, names_to = 'predictor') %>% 
+    group_by(predictor) %>% 
+    summarize(value = max(value)) %>% 
+    ggplot(aes(x = predictor, y = value)) +
+    geom_col(fill = 'red') + 
+    labs(
+        title = 'Data Range Before Scaling',
+        x = 'Variable',
+        y = 'Value') + 
+        theme(legend.title = element_blank(),
+              axis.text.x = element_text(hjust = 1, angle = 45),
+              plot.title = element_text(face = "bold"),
+              panel.background = element_rect(fill = "#ffffff"),
+              axis.line.y = element_line(colour = "grey"),
+              axis.line.x = element_line(colour = "grey"))
+```
+**After Scaling**
+
+Before we scale data_log, we need to remove non-numeric column date and exclude Day_of_week, WeekStatus as categorical variable
+
+```{r}
+# data scaling
+data_scale <- data_log %>% select(-date) %>% mutate(Appliances = as.numeric(Appliances))
+data_scale[,-c(1,30,31)] <- scale(data_scale[,-c(1,30,31)])
+data_scale %>% select_if(is.numeric) %>% 
+    pivot_longer(cols = -Appliances, names_to = 'predictor') %>% 
+    group_by(predictor) %>% 
+    summarize(value = max(value)) %>% 
+    ggplot(aes(x = predictor, y = value)) +
+    geom_col(fill = 'red') + 
+    labs(
+        title = 'Data Range After Scaling',
+        x = 'Variable',
+        y = 'Values') +
+        theme(legend.title = element_blank(),
+              axis.text.x = element_text(hjust = 1, angle = 45),
+              plot.title = element_text(face = "bold"),
+              panel.background = element_rect(fill = "#ffffff"),
+              axis.line.y = element_line(colour = "grey"),
+              axis.line.x = element_line(colour = "grey"))
+```
+
+**Data distribution after scaling**
+```{r}
+data_scale %>% 
+    select_if(is.numeric) %>% 
+    pivot_longer(cols = -Appliances, names_to = 'predictor') %>% 
+    ggplot() +
+    geom_histogram(aes(x = value), bins = 15, color = 'black', fill = 'white') +
+    facet_wrap(~predictor, scales = 'free_x')  +
+    labs(
+        title = 'Density graph of each variable',
+        x = 'variable',
+        y = 'Frequency'
+    )
+
+```
+
+- All humidity values except humid_parent and humid_outside has Normal distribution and for all temperature readings follow a Normal distribution except for temp_parent.
+- Out of the remaining columns, we can see that Visibility, Windspeed and lights are skewed.
+- The random variables rv1 and rv2 has normal distribution.
+
+# Exploratoty Data Analysis
+
+## Correlation
+
+```{r}
+#check correlation
+ggcorr(data_scale, hjust =1, label = T)
+```
+```{r}
+data_scale %>% select_if(is.numeric) %>% cor() %>% as.data.frame() %>% arrange(-Appliances)
+```
+
+```{r}
+data_scale <-  data_scale %>% select(-c(random_1, random_2, WeekStatus, Day_of_week))
+```
+
+The stronger the correlation, or how near 1 or -1 it is, the more closely related the predictors are. The correlation matrix graphic above shows the correlatiion on each variables. In our dataset, humid_station and Appliances have the highest negative correlations (-0.2) also NSM and Appliances have the highest positive correlations (0.6)
+
+NSM, lights, and temp_living have the most significant positive Appliances relationships. This indicates that the variables positively and substantially contribute to Appliances. On the other hand, the most vital negative link is found with water most negative correlation on the other hand.
+
+## Handling Outliers
+
+**Find outlier value**
+```{r}
+# Check the outlier and remove after scaling using zscore threshold point = 3
+data_clean <- data_scale %>% 
+  mutate( zscore = (Appliances - mean(Appliances)) / sd(Appliances)) %>%
+  filter(zscore <=3) %>%
+  select(-zscore)
+```
+
+```{r}
+boxplot(data_scale$Appliances)
+```
+
+**Remove the outlier after scaling**
+```{r}
+boxplot(data_clean$Appliances)
+```
+
+
+Modeling with one predictor
+```{r}
+model_scale <- lm(formula = Appliances ~ temp_living, data = data_scale)
+model_clean <- lm(formula = Appliances ~ temp_living, data = data_clean)
+```
+
+Plot the difference between two data
+
+```{r}
+plot(formula = Appliances ~ temp_living, data = data_scale)
+abline(model_scale, col = "red")
+abline(model_clean, col = "blue")
+```
+
+High Leverage, Low Influence: Because the graph shows that the outlier of the Appliances variable is at High Leverage, Low influence, then we analyze from R-Squared.
+
+R-squared
+```{r}
+summary(model_scale)$r.squared
+```
+
+```{r}
+summary(model_clean)$r.squared
+```
+
+Since the original data data has the same r-square as the scaled one, we decided to not using data_scale and using data_clean beacause it has better rsqured
+
+
+# Model Fitting and Evaluation
+
+## Data Splitting
+We now split the data into train and validation sets. The training set is used to train the model, which is checked against the validation set.
+
+```{r warning = FALSE, message = FALSE}
+library(rsample)
+RNGkind(sample.kind = "Rounding")
+```
+
+```{r}
+set.seed(123)
+
+index <- sample(nrow(data_clean), nrow(data_clean)*0.8)
+
+data_train <- data_clean[index,]
+data_validation <- data_clean[-index,]
+```
+
+**Check the Data Split**
+```{r}
+set.seed(120)
+control <- trainControl(method = "cv", number = 10)
+
+se_model <- train(Appliances ~ ., data = data_train, method = "lm", trControl = control)
+
+se_model
+```
+## Model Fitting
+
+Model with No Predictor
+
+```{r}
+# Model with No Predictor
+model_none <- lm(formula = Appliances ~ 1, data = data_train)
+```
+
+Model with All Predictors
+
+```{r}
+# Model with All Predictors
+model_all <- lm(Appliances ~ ., data_train)
+```
+
+Variable Selection : Step-Wise Regression Model
+
+We’ve built model.none that uses no predictor and model.all that uses all variables. Stepwise regression is a method to pick out the optimal model using the Akaika Information Criterion (AIC) as is metrics. The method optimizes the model for the least AIC, meaning the least information loss. Let’s try to pick the important variables using stepwise regression. It uses a greedy algorithm to find a local minima. Therefore, it does not guarantee the best model.
+
+1. Backward
+```{r}
+#  stepwise regression: backward elimination
+model_backward <- step(object = model_all,
+                       direction = "backward",
+                       trace = FALSE) 
+```
+
+2. Forward
+```{r}
+model_forward <- step(
+  object = model_none, # lower limit
+  direction = "forward",
+  scope = list(upper = model_all), # upper limit
+  trace = FALSE) 
+```
+
+3. Both
+```{r}
+model_both <- step(
+  object = model_none, #  lower limit
+  direction = "both",
+  scope = list(upper = model_all), #  upper limit
+  trace = FALSE
+)
+```
+
+## Model Evaluation
+We developed a model_none that does not employ a model or predictor. All variables are used. Stepwise regression uses the Akaike Information Criterion (AIC) and metrics to determine the best model. The technique optimizes the model for the lowest AIC to minimize information loss. Let's use stepwise regression to identify the crucial factors. It uses a greedy method to locate a local minimum. As a result, it cannot guarantee the best model.
+
+```{r}
+comparison <- compare_performance(model_none, model_all, model_backward, model_forward, model_both)
+as.data.frame(comparison)
+```
+Evaluation Function
+
+```{r}
+eval_recap <- function(truth, estimate){
+  
+  df_new <- data.frame(truth = truth,
+                       estimate = estimate)
+  
+  data.frame(RMSE = RMSE(estimate, truth),
+             MAE = MAE(estimate, truth),
+             "R-Square" = R2_Score(estimate, truth),
+             MAPE = MAPE(estimate, truth),
+             check.names = F
+             ) %>% 
+    mutate(MSE = sqrt(RMSE))
+}
+```
+
+Model None - Evaluation
+
+```{r}
+# Model None - Evaluation
+pred_none_val <- predict(model_none, data_validation)
+
+eval_recap(truth = data_validation$Appliances,
+           estimate = pred_none_val)
+```
+Model All - Evaluation
+
+```{r}
+pred_all_val <- predict(object = model_all, newdata = data_validation)
+
+eval_recap(truth = data_validation$Appliances,
+           estimate = pred_all_val)
+```
+
+Model Step-Wise Backward - Evaluation
+
+```{r}
+pred_backward_val <- predict(object = model_backward, newdata = data_validation)
+
+eval_recap(truth = data_validation$Appliances,
+           estimate = pred_backward_val)
+```
+Model Step-Wise Both - Evaluation
+```{r}
+pred_both_val <- predict(object = model_both, newdata = data_validation)
+
+eval_recap(truth = data_validation$Appliances,
+           estimate = pred_both_val)
+```
+As shown above, model_all has the best evaluation score. Now, we’re check the linearity assumption
+
+## Checking Assumptions
+Linear models are made with 4 assumptions. Before we carry on, we have to check whether these assumptions hold for our model.
+
+Assumption of linearity
+
+The assumption of linearity assumes that there exists a linear relationship between the predictors and the targe variable, so that our model can correctly describe it. A visual way to evaluate this is to plot the value of residues between our plot and the model.
+
+
+Visualization of residual histogram using hist() . function
+```{r}
+#  histogram residual
+ggplot(data = as.data.frame(model_all$residuals), aes(x = model_all$residuals)) +
+  geom_histogram(fill = "red", color = "blue", bins = 30) +
+  labs( title = "Regression Residual Distribution", subtitle = "Log Transformation", x = "residual")
+```
+Statistics Test with `shapiro.test()``
+
+Shapiro-Wilk hypothesis test:
+
+H0: Residuals are normal distributed
+H1: Residuals are not normally distributed (heteroscedastic)
+
+
+```{r}
+#  shapiro test residual
+shapiro.test(model_all$residuals)
+```
+```{r}
+check_normality(model_all)
+```
+Based on the result, the residuals are not normally distributed.
+
+VIF : Independence of Variable
+
+Multicollinearity is a condition with a **strong correlation between predictors**. This is undesirable because it indicates a redundant predictor in the model, which should be able to choose only one of the variables with a solid relationship. It is hoped that multicollinearity will not occur
+
+Test the VIF (Variance Inflation Factor) with the vif() function from the car package: * VIF value > 10: multicollinearity occurs in the model * VIF value < 10: there is no multicollinearity in the model
+
+```{r}
+vif(model_all)
+```
+The test result means there is has multicollinearity in the model
+
+
+Homoscedasticity
+
+Homoscedasticity assumption states that the error term in the relationship between the predictor and target variables is constant across all values of inputs. This assumption can be checked using the Breusch-Pagan test with hypotheses :
+
+H0: Value of error is the same across all inputs (homoscedastic)
+H1: Value of error is not the same across all range of inputs (heteroscedastic)
+
+```{r}
+plot(x = model_all$fitted.values, y = model_all$residuals)
+abline(h = 0, col = "#FF0000", ylab = 'Residuals', xlab = 'Prediction')
+```
+
+We can test the homoscedasticity of the model using the Breusch-Pagan test.
+```{r}
+bptest(model_all)
+```
+Based on the result, the error are not same across all range of inputs.
+
+Even though our linear model fails the tests, we can still try to conclude it. Our model’s mean average percentage error is a decent 0.074.
+
+```{r}
+coef_all <- model_all$coefficients[-1]
+barplot(coef_all, xlab = names(coef_all), main = 'Influence of `Model_all` Predictor',  ylab = 'Value')
+```
+
+# Model Interpretation and Improvement Ideas
+We shouldn’t transform the data_train because we already did it before in the beginning such as scaling, tranforming several variable into log, or removing any outliers and we are not tranforming the targeted variabel into a scaled version, because we wont scaled back the Test Result in the end of our research.
+
+## One-Way ANOVA
+```{r}
+anova_train <- aov(formula = Appliances ~ ., data = data_train)
+summary(anova_train)
+```
+
+## Random Foresttion
+Create random forest model as model_rf
+
+```{r}
+set.seed(123)
+model_rf <- randomForest(x = data_train %>% select(-Appliances),
+                         y = data_train$Appliances, 
+                         ntree = 500)
+
+model_rf
+```
+Check the summary and Predictor contribution on Targeted Variable
+
+```{r}
+model_rf$finalModel
+```
+
+```{r}
+varImp(model_rf)
+```
+Model Random Forest - Evaluation
+```{r}
+pred_rf_val <- predict(object = model_rf, newdata = data_validation)
+
+
+eval_recap(truth = data_validation$Appliances,
+           estimate = pred_rf_val)
+```
+Random Forest Variable Importance on Targeted Variabel
+```{r}
+library("tibble")
+model_rf$importance %>% 
+  as.data.frame() %>% 
+  arrange(-IncNodePurity) %>% 
+  rownames_to_column("variable") %>% 
+  head(10) %>% 
+  ggplot(aes(IncNodePurity, 
+             reorder(variable, IncNodePurity))
+         ) +
+  geom_col(fill = "green") +
+  labs(x = "Importance",
+       y = NULL,
+       title = "Random Forest Variable Importance")
+```
+The plot above showing how big the influence of each predictor, top 3 predictor who correlate with Appliances is NSM, lights and temp_teen
+
+Lime Interpretation
+
+```{r}
+library(lime)
+
+set.seed(123)
+explainer <- lime(x = data_validation %>% select(-Appliances),
+                  model = model_rf)
+
+model_type.randomForest <- function(x){
+  return("regression") # for regression problem
+}
+
+predict_model.randomForest <- function(x, newdata, type = "response") {
+
+    # return prediction value
+    predict(x, newdata) %>% as.data.frame()
+    
+}
+
+#  Select only the first 4 observations
+selected_data <- data_validation %>% 
+  select(-c(Appliances)) %>% 
+  slice(1:4)
+
+#  Explain the model
+set.seed(123)
+explanation <- explain(x = selected_data, 
+                       explainer = explainer,
+                       n_features = 27 #  Number of features to explain the model
+                       )
+```
+Since we’re using scaled data from the beginning, so to visualize model_rf, we’re still using scaled data.
+
+
+Random Forest Visualization dan Interpretation
+```{r}
+plot_features(explanation = explanation)
+```
+Explanation Fit indicate how good LIME explain the model, kind of like the R2
+ (R-Squared) value of linear regression. Here we see the Explanation Fit only has values around 0.15-0.61 (15%-61%), which can be interpreted that LIME can only explain a little about our model. Twi of the cases reached the standard which >= 50% (0.5),Case 1 and 2 has explanation fit under 0.50. We also can summarise that Case 3 has the biggest Explanation, but Case 2 has the biggest Prediction.
+ 
+## Support Vector Machine
+
+```{r}
+library(e1071)
+model_svm <- svm(Appliances ~ ., data = data_train)
+pred_svm_val <- predict(object = model_svm, newdata = data_validation)
+
+
+eval_recap(truth = data_validation$Appliances,
+           estimate = pred_svm_val)
+```
+
+The SVR model has higher performance compared to any model that we made before. However, we will still use both model for further analysis both as comparison and as examples.
+
+Lime Interpretation
+```{r}
+# create the explanation for the SVR model.
+set.seed(123)
+explainer_svm <- lime(x = data_train %>% select(-Appliances), 
+                  model = model_svm)
+
+# Create SVR model specification for lime.
+model_type.svm <- function(x){
+  return("regression") # for regression problem
+}
+
+predict_model.svm <- function(x, newdata, type = "response") {
+
+    # return prediction value
+    predict(x, newdata) %>% as.data.frame()
+    
+}
+```
+
+SVM Visualization dan Interpretation
+```{r}
+set.seed(123)
+explanation_svm <- explain(x = selected_data, 
+                       explainer = explainer_svm,
+                       kernel_width = 1,
+                       feature_select = "auto", # Method of feature selection for lime
+                       n_features = 10 # Number of features to explain the model
+                       )
+
+plot_features(explanation_svm)
+```
+Explanation Fit indicate how good LIME explain the model, kind of like the R2
+ (R-Squared) value of linear regression. Here we see the Explanation Fit only has values around 0.3-0.4 (30-40%), which can be interpreted that LIME can only explain a little about our model. None of the cases reached the standard which >= 50% (0.5). From all of the case, We also can summarise that Case 1 has the biggest Explanation and Prediction.
+ 
+
+# Conclusion
+In this research project, we have examined various concrete formulations with different appliances. We developed a model that aligns with the available information. Using this model as a framework, we developed a new formulation that is used to predict appliances.
+
+Throughout this project, we have employed a random forest model. Compared to a standard regression model, the random forest model better describes the data. We have found that, despite being more complex, the random forest model is still understandable. The prediction model implementing “model_rf” obtained MAE values of 6.0 and R Square of 59% on the validation dataset.
